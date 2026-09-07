@@ -76,6 +76,23 @@ def interpolate_rbt(twist: np.ndarray, t: float) -> np.ndarray:
     se3 = wedge(twist)
     return la.expm(se3 * t)
 
+def so3_log(R, tol=1e-8):
+    """Robust rotation-matrix logarithm: returns (unit axis, angle)."""
+    cos_theta = np.clip((np.trace(R) - 1) / 2, -1.0, 1.0)
+    theta = np.arccos(cos_theta)
+    if theta < tol:
+        return np.array([1.0, 0.0, 0.0]), 0.0
+    elif np.pi - theta < tol:
+        # Standard R - R^T / (2 sin theta) formula is 0/0 here.
+        # Use R + I = 2 * omega @ omega.T instead.
+        B = (R + np.eye(3)) / 2.0
+        i = int(np.argmax(np.diag(B)))
+        omega = B[:, i] / np.sqrt(max(B[i, i], 0.0))
+        return omega / np.linalg.norm(omega), np.pi
+    else:
+        omega = vee((R - R.T) / (2 * np.sin(theta)))
+        return omega, theta
+
 
 def generate_trajectory_from_twist(twist: np.ndarray,
                                    n_steps: int = 100) -> np.ndarray:
@@ -102,16 +119,21 @@ def generate_trajectory_from_twist(twist: np.ndarray,
     return trajectory
 
 def given_rbt(R: np.ndarray, p: np.ndarray) -> np.ndarray:
-    """ 
-    Given the RBT, return the twist.
-    """
+    """Given the RBT, return the twist"""
     if not check_R(R):
         raise ValueError("Invalid rotation matrix")
-
-    g = Rp_to_g(R, p)
-    xihat = la.logm(g)
-    twist = unwedge(xihat)
-    return twist
+        
+    omega, theta = so3_log(R)
+    what = hat(omega)
+    
+    if theta < 1e-8:
+        return np.concatenate([p, np.zeros(3)])
+        
+    Ginv = ((1 / theta) * np.eye(3) - 0.5 * what
+            + (1 / theta - 0.5 / np.tan(theta / 2)) * (what @ what))
+    v = theta * (Ginv @ p)
+    
+    return np.concatenate([v, theta * omega])
 
 def given_v_omega_theta(v: np.ndarray, omega: np.ndarray, theta: float) -> np.ndarray:
     """
